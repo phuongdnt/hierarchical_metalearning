@@ -1,11 +1,8 @@
 """
-HIERARCHICAL RULE CHOICE ENVIRONMENT
+HIERARCHICAL RULE CHOICE ENVIRONMENT - COMPATIBLE VERSION
 
-Kết hợp:
-1. 3-phase hierarchical learning (Discovery → Analysis → Execution) ✅
-2. Liu's serial.py dynamics 100% ✅
-3. Rule logic hợp lý (không order dư) ✅
-4. Coordination rewards ✅
+Tương thích 100% với serial.py gốc của Liu.
+KHÔNG cần thay đổi serial.py.
 
 Flow:
 Neural Network → Rule ID → Phase Controller → Rule Logic → Order Qty → Liu's step()
@@ -13,23 +10,20 @@ Neural Network → Rule ID → Phase Controller → Rule Logic → Order Qty →
 
 import numpy as np
 from gym import spaces
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional
 
-# Import Liu's environment
-try:
-    from envs.serial import (
-        Env as LiuSerialEnv,
-        LEVEL_NUM, LEAD_TIME, H, B, S_I, S_O, ALPHA
-    )
-except ImportError:
-    LEVEL_NUM = 3
-    LEAD_TIME = 4
-    H = [1, 1, 1]
-    B = [10, 10, 10]
-    S_I = 0
-    S_O = 0
-    ALPHA = 0.5
-    from envs.serial import Env as LiuSerialEnv
+# Import từ serial.py GỐC của bạn
+from envs.serial import Env as LiuSerialEnv
+from envs.serial import (
+    LEVEL_NUM, 
+    LEAD_TIME, 
+    H, B, 
+    S_I, S_O, 
+    ALPHA, 
+    EPISODE_LEN, 
+    ACTION_DIM, 
+    OBS_DIM
+)
 
 
 class ThreePhaseController:
@@ -37,7 +31,7 @@ class ThreePhaseController:
     3-Phase Hierarchical Learning Controller.
     
     Phase 1: DISCOVERY - Explore all rules, collect performance data
-    Phase 2: ANALYSIS - Select primary rule for each agent
+    Phase 2: ANALYSIS - Select primary rule for each agent  
     Phase 3: EXECUTION - Use primary rule with adaptive switching
     """
     
@@ -58,37 +52,33 @@ class ThreePhaseController:
     def reset(self):
         """Reset controller for new episode."""
         self.current_step = 0
-        self.phase = "discovery"  # discovery, analysis, execution
+        self.phase = "discovery"
         
         # Performance tracking per rule per agent
         self.rule_rewards = [[[] for _ in range(3)] for _ in range(self.num_agents)]
         
         # Primary rules (selected after discovery)
-        self.primary_rules = [0] * self.num_agents  # Default to FOQ
+        self.primary_rules = [0] * self.num_agents
         
         # Execution phase tracking
         self.steps_since_switch = [0] * self.num_agents
         self.recent_rewards = [[] for _ in range(self.num_agents)]
         
-        # Discovery: which rules to try
+        # Discovery schedule
         self.discovery_schedule = self._create_discovery_schedule()
         self.discovery_idx = 0
+        self._last_used_rules = [0] * self.num_agents
     
     def _create_discovery_schedule(self) -> List[List[int]]:
-        """
-        Create schedule for rule exploration during discovery.
-        Ensures each rule is tried multiple times.
-        """
+        """Create schedule for rule exploration during discovery."""
         schedule = []
         rules_per_cycle = 3
         cycles = self.discovery_steps // rules_per_cycle
         
         for cycle in range(cycles):
             for rule_id in range(3):
-                # All agents try same rule (simpler coordination)
                 schedule.append([rule_id] * self.num_agents)
         
-        # Fill remaining steps
         while len(schedule) < self.discovery_steps:
             rule_id = len(schedule) % 3
             schedule.append([rule_id] * self.num_agents)
@@ -96,46 +86,35 @@ class ThreePhaseController:
         return schedule
     
     def process_actions(self, raw_actions: List, rewards: List = None) -> List[int]:
-        """
-        Process actions through hierarchical controller.
-        
-        Args:
-            raw_actions: Actions from neural network (rule selections)
-            rewards: Rewards from previous step (for tracking)
-            
-        Returns:
-            Final rule selections for each agent
-        """
-        # Update with previous rewards
+        """Process actions through hierarchical controller."""
         if rewards is not None:
             self._update_rewards(rewards)
         
         self.current_step += 1
         
-        # Phase transitions
         if self.phase == "discovery" and self.current_step >= self.discovery_steps:
             self._transition_to_analysis()
         
-        # Get actions based on phase
         if self.phase == "discovery":
-            return self._discovery_action()
+            selected = self._discovery_action()
         elif self.phase == "analysis":
             self._transition_to_execution()
-            return self.primary_rules.copy()
-        else:  # execution
-            return self._execution_action(raw_actions)
+            selected = self.primary_rules.copy()
+        else:
+            selected = self._execution_action(raw_actions)
+        
+        self._last_used_rules = selected.copy()
+        return selected
     
     def _update_rewards(self, rewards: List):
         """Track rewards for performance evaluation."""
         for agent_id, reward in enumerate(rewards):
             reward_val = float(reward[0]) if isinstance(reward, (list, np.ndarray)) else float(reward)
             
-            # Track for recent window
             self.recent_rewards[agent_id].append(reward_val)
             if len(self.recent_rewards[agent_id]) > self.evaluation_window:
                 self.recent_rewards[agent_id].pop(0)
             
-            # Track per rule (during discovery)
             if self.phase == "discovery" and self.discovery_idx > 0:
                 prev_rules = self.discovery_schedule[self.discovery_idx - 1]
                 rule_id = prev_rules[agent_id]
@@ -153,64 +132,60 @@ class ThreePhaseController:
         """Transition from discovery to analysis phase."""
         self.phase = "analysis"
         
-        # Select best rule for each agent based on discovery data
+        print(f"\n{'='*60}")
+        print("📊 ANALYSIS PHASE - Selecting Primary Rules")
+        print(f"{'='*60}")
+        
+        rule_names = ['FOQ', 'POQ', 'SM']
+        
         for agent_id in range(self.num_agents):
-            best_rule = 0
-            best_avg = float('-inf')
-            
+            avg_rewards = []
             for rule_id in range(3):
                 rewards = self.rule_rewards[agent_id][rule_id]
                 if rewards:
-                    avg = np.mean(rewards)
-                    if avg > best_avg:
-                        best_avg = avg
-                        best_rule = rule_id
+                    avg_rewards.append(np.mean(rewards))
+                else:
+                    avg_rewards.append(-float('inf'))
             
+            best_rule = int(np.argmax(avg_rewards))
             self.primary_rules[agent_id] = best_rule
+            
+            print(f"  Agent {agent_id}: Primary={rule_names[best_rule]}")
+            for rid, avg in enumerate(avg_rewards):
+                samples = len(self.rule_rewards[agent_id][rid])
+                if avg > -float('inf'):
+                    print(f"    {rule_names[rid]}: Avg={avg:.2f} ({samples} samples)")
         
-        print(f"\n🎯 PHASE TRANSITION: Discovery → Analysis")
-        print(f"   Primary rules selected: {['FOQ', 'POQ', 'SM'][r] for r in self.primary_rules}")
+        print(f"{'='*60}\n")
     
     def _transition_to_execution(self):
         """Transition from analysis to execution phase."""
         self.phase = "execution"
         self.steps_since_switch = [0] * self.num_agents
-        print(f"   Entering Execution Phase\n")
     
     def _execution_action(self, raw_actions: List) -> List[int]:
-        """
-        Get action during execution phase.
-        
-        Uses primary rule but can switch if performance is poor.
-        """
-        final_actions = []
+        """Execution phase: Use primary rules with adaptive switching."""
+        selected = []
         
         for agent_id in range(self.num_agents):
-            # Increment cooldown counter
             self.steps_since_switch[agent_id] += 1
+            nn_action = self._convert_action_to_rule(raw_actions[agent_id])
             
-            # Check if switch is allowed (cooldown passed)
-            if self.steps_since_switch[agent_id] < self.cooldown_period:
-                # Still in cooldown, use primary rule
-                final_actions.append(self.primary_rules[agent_id])
+            can_switch = self.steps_since_switch[agent_id] >= self.cooldown_period
+            recent = self.recent_rewards[agent_id]
+            avg_recent = np.mean(recent) if recent else 0
+            performance_poor = avg_recent < self.switching_threshold
+            
+            if can_switch and performance_poor and nn_action != self.primary_rules[agent_id]:
+                selected.append(nn_action)
+                self.steps_since_switch[agent_id] = 0
             else:
-                # Check performance
-                recent = self.recent_rewards[agent_id]
-                if recent and np.mean(recent) < self.switching_threshold:
-                    # Performance poor, allow network to choose
-                    action = self._extract_action(raw_actions[agent_id])
-                    if action != self.primary_rules[agent_id]:
-                        self.steps_since_switch[agent_id] = 0  # Reset cooldown
-                        self.primary_rules[agent_id] = action  # Update primary
-                    final_actions.append(action)
-                else:
-                    # Performance OK, use primary rule
-                    final_actions.append(self.primary_rules[agent_id])
+                selected.append(self.primary_rules[agent_id])
         
-        return final_actions
+        return selected
     
-    def _extract_action(self, action) -> int:
-        """Extract rule ID from action (handles various formats)."""
+    def _convert_action_to_rule(self, action) -> int:
+        """Convert action to rule ID."""
         if isinstance(action, np.ndarray):
             if action.shape == () or len(action.shape) == 0:
                 return int(action) % 3
@@ -222,58 +197,36 @@ class ThreePhaseController:
             return int(action) % 3
     
     def get_phase(self) -> str:
-        """Get current phase name."""
         return self.phase
-    
-    def get_state_for_observation(self, agent_id: int) -> Dict:
-        """Get hierarchical state for enhanced observation."""
-        phase_encoding = {
-            "discovery": [1.0, 0.0, 0.0],
-            "analysis": [0.0, 1.0, 0.0],
-            "execution": [0.0, 0.0, 1.0]
-        }
-        
-        primary_rule_onehot = [0.0, 0.0, 0.0]
-        primary_rule_onehot[self.primary_rules[agent_id]] = 1.0
-        
-        return {
-            "phase": phase_encoding.get(self.phase, [0.0, 0.0, 1.0]),
-            "primary_rule": primary_rule_onehot,
-            "steps_since_switch": self.steps_since_switch[agent_id] / self.cooldown_period,
-        }
 
 
 class Env(LiuSerialEnv):
     """
     Hierarchical Rule Choice Environment.
-    
-    Combines:
-    - 3-phase hierarchical learning
-    - Liu's serial.py dynamics (100% accurate)
-    - Smart rule logic (no over-ordering)
+    Kế thừa 100% từ Liu's serial.py Env class.
     """
     
     def __init__(self):
-        # Initialize parent (Liu's SerialEnv)
-        super().__init__()
+        # Gọi __init__ của parent class
+        super(Env, self).__init__()
         
-        # Override action space: 3 rules
+        # Override action space: 3 rules thay vì 21 quantities
         self.action_dim = 3
         self.action_space = [spaces.Discrete(3) for _ in range(self.agent_num)]
         
         # Rule parameters
         self.rule_params = {
             'foq': {
-                'reorder_point': 15.0,
-                'order_quantity': 25.0,
+                'reorder_point': 30.0,
+                'order_quantity': 12.0,
             },
             'poq': {
-                'safety_periods': 1.5,
-                'coverage_periods': 4,
+                'safety_stock': 10.0,
+                'coverage_periods': 1.5,
             },
             'sm': {
-                'safety_periods': 1.5,
-                'coverage_periods': 3,
+                'safety_stock': 8.0,
+                'coverage_periods': 1.5,
             }
         }
         
@@ -303,12 +256,11 @@ class Env(LiuSerialEnv):
     
     def reset(self, train=True, normalize=True):
         """Reset environment."""
-        obs = super().reset(train=train, normalize=normalize)
+        # Gọi reset của parent (Liu's Env)
+        obs = super(Env, self).reset(train=train, normalize=normalize)
         
-        # Reset hierarchical controller
+        # Reset hierarchical components
         self.phase_controller.reset()
-        
-        # Reset tracking
         self.rule_counts = [[0, 0, 0] for _ in range(self.agent_num)]
         self._demand_history = [10.0] * 10
         self._last_rewards = None
@@ -316,46 +268,39 @@ class Env(LiuSerialEnv):
         return obs
     
     def step(self, actions, one_hot=True):
-        """
-        Execute step with hierarchical rule selection.
-        
-        Flow:
-        1. Neural network outputs → Phase controller → Final rule selection
-        2. Rule logic → Order quantity
-        3. Liu's state_update → Rewards, next state
-        """
-        # Convert one-hot to indices
+        """Execute step with hierarchical rule selection."""
+        # Convert to indices
         if one_hot:
             action_indices = [np.argmax(a) for a in actions]
         else:
             action_indices = list(actions)
         
-        # Step 1: Process through hierarchical controller
+        # Process through hierarchical controller
         selected_rules = self.phase_controller.process_actions(
             raw_actions=action_indices,
             rewards=self._last_rewards
         )
         
-        # Step 2: Update demand history
+        # Update demand history
         if hasattr(self, 'demand_list') and self.step_num < len(self.demand_list):
             self._demand_history.append(float(self.demand_list[self.step_num]))
             if len(self._demand_history) > 20:
                 self._demand_history = self._demand_history[-20:]
         
-        # Step 3: Convert rules to order quantities
+        # Convert rules to order quantities
         order_quantities = self._rules_to_orders(selected_rules)
         
         # Track rule usage
         for agent_id, rule_id in enumerate(selected_rules):
             self.rule_counts[agent_id][rule_id] += 1
         
-        # Step 4: Call Liu's state_update with our quantities
+        # Gọi state_update của Liu (QUAN TRỌNG)
         rewards = self.state_update(order_quantities)
         
-        # Store for logging
+        # Store orders
         self.current_orders = order_quantities
         
-        # Get observations
+        # Get observations (Liu's method)
         sub_agent_obs = self.get_step_obs(order_quantities)
         
         # Process rewards (Liu's method)
@@ -379,15 +324,13 @@ class Env(LiuSerialEnv):
                 'phase': self.phase_controller.get_phase(),
                 'primary_rule': self.phase_controller.primary_rules[agent_id],
             }
-            
             if sub_agent_done[0]:
                 info['episode_metrics'] = self._build_episode_metrics()
-            
             sub_agent_info.append(info)
         
         return [sub_agent_obs, sub_agent_reward, sub_agent_done, sub_agent_info]
     
-    def _rules_to_orders(self, selected_rules: List[int]) -> List[float]:
+    def _rules_to_orders(self, selected_rules: List[int]) -> List:
         """Convert rule selections to order quantities."""
         orders = []
         
@@ -402,19 +345,16 @@ class Env(LiuSerialEnv):
             else:
                 qty = self._apply_sm(inv_pos, avg_demand)
             
-            orders.append(qty)
+            # Ensure integer for Liu's state_update
+            orders.append(int(round(qty)))
         
         return orders
     
     def _get_inventory_position(self, agent_id: int) -> float:
-        """Calculate inventory position = inventory + pipeline - backlog."""
-        inventory = float(self.inventory[agent_id]) if hasattr(self, 'inventory') else 0.0
-        backlog = float(self.backlog[agent_id]) if hasattr(self, 'backlog') else 0.0
-        
-        pipeline_sum = 0.0
-        if hasattr(self, 'order') and self.order and agent_id < len(self.order):
-            pipeline_sum = sum(float(p) for p in self.order[agent_id])
-        
+        """Calculate inventory position."""
+        inventory = float(self.inventory[agent_id])
+        backlog = float(self.backlog[agent_id])
+        pipeline_sum = sum(float(p) for p in self.order[agent_id])
         return inventory + pipeline_sum - backlog
     
     def _get_avg_demand(self) -> float:
@@ -430,37 +370,35 @@ class Env(LiuSerialEnv):
         
         if inv_pos > reorder_point:
             return 0.0
-        return order_qty
+        return min(order_qty, max(0, reorder_point + order_qty - inv_pos))
     
     def _apply_poq(self, inv_pos: float, avg_demand: float) -> float:
         """Periodic Order Quantity rule."""
-        safety_periods = self.rule_params['poq']['safety_periods']
+        safety_stock = self.rule_params['poq']['safety_stock']
         coverage_periods = self.rule_params['poq']['coverage_periods']
         
-        reorder_point = avg_demand * safety_periods
+        target = safety_stock + avg_demand * coverage_periods
         
-        if inv_pos > reorder_point:
+        if inv_pos >= target + avg_demand:
             return 0.0
         
-        target_inv = avg_demand * coverage_periods
-        order_qty = max(0.0, target_inv - inv_pos)
-        order_qty = round(order_qty / 5) * 5
-        return min(100, max(0, order_qty))
+        order_qty = max(0.0, target + avg_demand - inv_pos)
+        order_qty = min(order_qty, avg_demand * 2)
+        return round(order_qty)
     
     def _apply_sm(self, inv_pos: float, avg_demand: float) -> float:
         """Silver-Meal rule."""
-        safety_periods = self.rule_params['sm']['safety_periods']
+        safety_stock = self.rule_params['sm']['safety_stock']
         coverage_periods = self.rule_params['sm']['coverage_periods']
         
-        reorder_point = avg_demand * safety_periods
+        target = safety_stock + avg_demand * coverage_periods
         
-        if inv_pos > reorder_point:
+        if inv_pos >= target + avg_demand:
             return 0.0
         
-        target_inv = avg_demand * coverage_periods
-        order_qty = max(0.0, target_inv - inv_pos)
-        order_qty = round(order_qty / 5) * 5
-        return min(100, max(0, order_qty))
+        order_qty = max(0.0, target + avg_demand - inv_pos)
+        order_qty = min(order_qty, avg_demand * 2)
+        return round(order_qty)
     
     def _build_episode_metrics(self) -> Dict:
         """Build episode-level metrics."""
@@ -481,7 +419,9 @@ class Env(LiuSerialEnv):
         }
 
 
-# Test
+# =============================================================================
+# TEST CODE
+# =============================================================================
 if __name__ == "__main__":
     print("\n" + "="*60)
     print("TESTING HIERARCHICAL RULE CHOICE ENVIRONMENT")
@@ -490,31 +430,50 @@ if __name__ == "__main__":
     env = Env()
     obs = env.reset()
     
-    print(f"Observation shape: {np.array(obs).shape}")
+    print(f"\nObservation shape: {np.array(obs).shape}")
     print(f"Action dim: {env.action_dim}")
+    print(f"Number of agents: {env.agent_num}")
     
-    # Run episode to test phase transitions
-    print("\n--- Running episode to test phases ---")
+    print("\n--- Running full episode ---")
     total_reward = 0
+    step_count = 0
     
-    for step in range(60):
-        # Random actions (neural network would provide these)
+    for step in range(min(200, env.episode_max_steps)):
         actions = [np.random.randint(0, 3) for _ in range(env.agent_num)]
         result = env.step(actions, one_hot=False)
         obs, rewards, dones, infos = result
         
-        total_reward += sum(r[0] for r in rewards)
+        for r in rewards:
+            reward_val = r[0] if isinstance(r, (list, np.ndarray)) else r
+            total_reward += reward_val
         
-        # Print at phase boundaries
-        if step in [0, 19, 20, 21, 30, 50]:
+        step_count += 1
+        
+        if step in [0, 19, 20, 21, 50, 100, 199]:
             phase = infos[0]['phase']
             primary = infos[0]['primary_rule']
-            print(f"  Step {step}: Phase={phase}, Primary={['FOQ','POQ','SM'][primary]}, "
-                  f"Order={env.current_orders}, Inv={[int(i) for i in env.inventory]}")
+            orders = [int(o) for o in env.current_orders]
+            invs = [int(i) for i in env.inventory]
+            rule_names = ['FOQ', 'POQ', 'SM']
+            print(f"  Step {step:3d}: Phase={phase:9s}, Primary={rule_names[primary]}, "
+                  f"Orders={orders}, Inv={invs}")
+        
+        if dones[0]:
+            break
     
-    print(f"\n  Total reward (60 steps): {total_reward:.2f}")
-    print(f"  Rule usage: {env.rule_counts}")
-    print(f"  Final primary rules: {[['FOQ','POQ','SM'][r] for r in env.phase_controller.primary_rules]}")
+    print(f"\n--- Episode Complete ---")
+    print(f"  Steps: {step_count}")
+    print(f"  Total reward: {total_reward:.2f}")
+    print(f"  Avg reward/step: {total_reward/step_count:.2f}")
+    
+    print(f"\n--- Rule Usage ---")
+    rule_names = ['FOQ', 'POQ', 'SM']
+    for agent_id in range(env.agent_num):
+        counts = env.rule_counts[agent_id]
+        total = sum(counts)
+        if total > 0:
+            pcts = [c/total*100 for c in counts]
+            print(f"  Agent {agent_id}: FOQ={pcts[0]:.1f}%, POQ={pcts[1]:.1f}%, SM={pcts[2]:.1f}%")
     
     print("\n" + "="*60)
     print("✅ TEST COMPLETE")
