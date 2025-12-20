@@ -1,9 +1,7 @@
 import csv
 import time
 import numpy as np
-import pandas as pd
 from pathlib import Path
-from functools import reduce
 import torch
 from itertools import chain
 from runners.separated.base_runner import Runner
@@ -18,8 +16,12 @@ class CRunner(Runner):
         np.random.seed(42)
         self.completed_episodes = 0
         self.env_infos_buffer = {}
+        # Track latest per-episode metrics (updated by _record_episode_metrics)
+        self._latest_metrics = {}
+
+        # CSV path & header (include reward explicitly)
         self.metrics_path = self.run_dir / "env_metrics.csv"
-        self.metrics_header = ["episode", "service_level"]
+        self.metrics_header = ["episode", "reward", "service_level"]
         for agent in range(self.num_agents):
             for rule_idx in range(3):
                 self.metrics_header.append(f"agent{agent}_rule{rule_idx}")
@@ -44,6 +46,7 @@ class CRunner(Runner):
         best_reward = float('-inf')
         best_bw = []
         record = 0
+        episode_rewards = []
 
         for episode in range(episodes):
             
@@ -67,6 +70,10 @@ class CRunner(Runner):
             if self.use_linear_lr_decay:
                 self.trainer.policy.lr_decay(episode, episodes)
 
+            # reset per-episode trackers
+            self._latest_metrics = {}
+            episode_reward_sum = 0.0
+
             for step in range(self.episode_length):
                 # Sample actions
                 values, actions, action_log_probs, rnn_states, rnn_states_critic, actions_env = self.collect(step)
@@ -82,6 +89,8 @@ class CRunner(Runner):
 
                 rewards_log.append(rewards)
 
+                episode_reward_sum += np.mean(rewards)
+
                 inv, demand, orders = self.envs.get_property()
                 inv_log.append(inv)
                 demand_log.append(demand)
@@ -93,6 +102,37 @@ class CRunner(Runner):
                 
                 # insert data into buffer
                 self.insert(data)
+
+            # finalize episode metrics
+            avg_episode_reward = episode_reward_sum / float(self.episode_length)
+            episode_rewards.append(avg_episode_reward)
+
+            # build per-episode row
+            row = [episode, avg_episode_reward]
+            service = float(self._latest_metrics.get("service_level", 0.0))
+            service = min(1.0, max(0.0, service))
+            row.append(service)
+
+            for agent in range(self.num_agents):
+                usage = self._latest_metrics.get("rule_usage", [])
+                usage_agent = usage[agent] if agent < len(usage) else []
+                for rule_idx in range(3):
+                    value = float(usage_agent[rule_idx]) if rule_idx < len(usage_agent) else 0.0
+                    row.append(value)
+
+            for agent in range(self.num_agents):
+                order_var = self._latest_metrics.get("order_variance", [])
+                value = float(order_var[agent]) if agent < len(order_var) else 0.0
+                row.append(value)
+
+            for agent in range(self.num_agents):
+                bullwhip = self._latest_metrics.get("bullwhip_index", [])
+                value = float(bullwhip[agent]) if agent < len(bullwhip) else 0.0
+                row.append(value)
+
+            with open(self.metrics_path, "a", newline="") as csvfile:
+                writer = csv.writer(csvfile)
+                writer.writerow(row)
 
             # compute return and update network
             self.compute()
@@ -152,95 +192,6 @@ class CRunner(Runner):
                 actions_log = []
                 demand_log = []
 
-                print("\n📊 Saving episode metrics to CSV...")
-                try:
-                  
-                    # Get metrics file path (parent of run_dir)
-                    metrics_file = Path(self.run_dir).parent / 'env_metrics.csv'
-                    
-                    # Calculate number of episodes
-                    num_episodes = int(self.all_args.num_env_steps / self.episode_length)
-                    
-                    print(f"  Total steps: {self.all_args.num_env_steps}")
-                    print(f"  Episode length: {self.episode_length}")
-                    print(f"  Number of episodes: {num_episodes}")
-                    
-                    # Initialize metrics data with episodes
-                    metrics_data = {
-                        'episode': list(range(num_episodes))
-                    }
-                    
-                    # Try to collect real metrics if available
-                    if hasattr(self, 'episode_rewards') and self.episode_rewards:
-                        print(f"  Found {len(self.episode_rewards)} episode rewards")
-                        metrics_data['reward'] = self.episode_rewards[:num_episodes]
-                    else:
-                        # Fallback: generate dummy reward progression
-                        print("  No episode_rewards found, using dummy data")
-                        
-                        # Simulate improving rewards over training
-                        metrics_data['reward'] = [-50 + (i * 0.5) + np.random.normal(0, 2) for i in range(num_episodes)]
-                    
-                    # Service level (if available)
-                    if hasattr(self, 'env_infos_buffer') and self.env_infos_buffer:
-                        print(f"  Found {len(self.env_infos_buffer)} env infos")
-                        try:
-                            service_levels = [info.get('service_level', 0.9) for info in self.env_infos_buffer[:num_episodes]]
-                            metrics_data['service_level'] = service_levels
-                        except:
-                            print("  Could not extract service_level, using dummy data")
-                            metrics_data['service_level'] = [0.85 + (i * 0.001) for i in range(num_episodes)]
-                    else:
-                        print("  No env_infos_buffer found, using dummy service_level")
-                        metrics_data['service_level'] = [0.85 + (i * 0.001) for i in range(num_episodes)]
-                    
-                    # Rule usage (dummy data for now)
-                    print("  Adding rule usage metrics (dummy data)")
-                    
-                    for agent_id in range(3):
-                        # Rule probabilities that evolve over time
-                        base_foq = 0.2 + (agent_id * 0.05)
-                        base_poq = 0.5 - (agent_id * 0.1)
-                        base_sm = 0.3 + (agent_id * 0.05)
-                        
-                        metrics_data[f'agent{agent_id}_rule0'] = [base_foq + np.random.uniform(-0.05, 0.05) for _ in range(num_episodes)]
-                        metrics_data[f'agent{agent_id}_rule1'] = [base_poq + np.random.uniform(-0.05, 0.05) for _ in range(num_episodes)]
-                        metrics_data[f'agent{agent_id}_rule2'] = [base_sm + np.random.uniform(-0.05, 0.05) for _ in range(num_episodes)]
-                        
-                        # Order variance
-                        metrics_data[f'agent{agent_id}_order_variance'] = [np.random.uniform(0.5, 1.5) for _ in range(num_episodes)]
-                        
-                        # Bullwhip index
-                        metrics_data[f'agent{agent_id}_bullwhip'] = [np.random.uniform(0.7, 1.0) for _ in range(num_episodes)]
-                    
-                    # Create DataFrame
-                    df = pd.DataFrame(metrics_data)
-                    
-                    # Ensure all rule columns sum to ~1.0 per agent
-                    for agent_id in range(3):
-                        rule_cols = [f'agent{agent_id}_rule{i}' for i in range(3)]
-                        row_sums = df[rule_cols].sum(axis=1)
-                        for col in rule_cols:
-                            df[col] = df[col] / row_sums
-                    
-                    # Save to CSV
-                    df.to_csv(metrics_file, index=False)
-                    
-                    print(f"✅ Metrics saved successfully!")
-                    print(f"  File: {metrics_file}")
-                    print(f"  Shape: {df.shape}")
-                    print(f"  Columns: {list(df.columns)}")
-                    
-                    # Verify file was created
-                    if metrics_file.exists():
-                        file_size = metrics_file.stat().st_size
-                        print(f"  File size: {file_size:,} bytes")
-                    
-                except Exception as e:
-                    print(f"❌ Error saving metrics: {e}")
-                    import traceback
-                    traceback.print_exc()
-        
         return (float(np.mean(overall_reward)) if overall_reward else 0.0), best_bw
         # eval
 
@@ -257,36 +208,32 @@ class CRunner(Runner):
 
     def _record_episode_metrics(self, metrics):
         service = float(metrics.get("service_level", 0.0))
-        row = [self.completed_episodes, service]
+        self._latest_metrics["service_level"] = service
         self.env_infos_buffer.setdefault("service_level", []).append(service)
 
         rule_usage = metrics.get("rule_usage", [])
+        self._latest_metrics["rule_usage"] = rule_usage
         for agent in range(self.num_agents):
             usage = rule_usage[agent] if agent < len(rule_usage) else []
             for rule_idx in range(3):
                 value = float(usage[rule_idx]) if rule_idx < len(usage) else 0.0
                 key = f"rule_usage/agent_{agent}_rule_{rule_idx}"
                 self.env_infos_buffer.setdefault(key, []).append(value)
-                row.append(value)
 
         order_variance = metrics.get("order_variance", [])
+        self._latest_metrics["order_variance"] = order_variance
         for agent in range(self.num_agents):
             value = float(order_variance[agent]) if agent < len(order_variance) else 0.0
             key = f"order_variance/agent_{agent}"
             self.env_infos_buffer.setdefault(key, []).append(value)
-            row.append(value)
 
         bullwhip = metrics.get("bullwhip_index", [])
+        self._latest_metrics["bullwhip_index"] = bullwhip
         for agent in range(self.num_agents):
             value = float(bullwhip[agent]) if agent < len(bullwhip) else 0.0
             key = f"bullwhip_index/agent_{agent}"
             self.env_infos_buffer.setdefault(key, []).append(value)
-            row.append(value)
-
-        with open(self.metrics_path, "a", newline="") as csvfile:
-            writer = csv.writer(csvfile)
-            writer.writerow(row)
-        self.completed_episodes += 1
+        # completed_episodes used only for logging; not incremented here to avoid mismatch
 
     def warmup(self):
         # reset env

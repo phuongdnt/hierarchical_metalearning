@@ -1,19 +1,13 @@
-"""Three-phase learning controller for hierarchical rule selection."""
+"""Three-phase learning controller for hierarchical rule selection - FIXED."""
 
 import numpy as np
 from typing import List, Dict, Any, Optional
 from .performance_tracker import RulePerformanceTracker
 
+
 class ThreePhaseController:
     """
     Manages 3-phase hierarchical learning process.
-    
-    INCLUDES:
-    - Phase management (Discovery → Analysis → Execution)
-    - Primary rule determination
-    - Adaptive switching logic (no need for switching_controller.py)
-    - Cooldown management
-    - Performance-based decision making
     
     Phase 1 - Discovery (Steps 1-20):
         Allow free exploration, track all rule performances
@@ -33,14 +27,6 @@ class ThreePhaseController:
                  evaluation_window: int = 10):
         """
         Initialize three-phase controller.
-        
-        Args:
-            num_agents (int): Number of agents
-            discovery_steps (int): Discovery phase length (default: 20)
-            analysis_steps (int): Analysis phase length (default: 1)
-            cooldown_period (int): Cooldown after switch (default: 15)
-            switching_threshold (float): Performance threshold (default: -100.0)
-            evaluation_window (int): Recent performance window (default: 10)
         """
         self.num_agents = num_agents
         self.discovery_steps = discovery_steps
@@ -79,12 +65,7 @@ class ThreePhaseController:
         self.switch_history = []
     
     def get_current_phase(self) -> str:
-        """
-        Get current learning phase.
-        
-        Returns:
-            str: 'discovery', 'analysis', or 'execution'
-        """
+        """Get current learning phase."""
         if self.current_step < self.discovery_steps:
             return 'discovery'
         elif self.current_step < self.discovery_steps + self.analysis_steps:
@@ -92,28 +73,22 @@ class ThreePhaseController:
         else:
             return 'execution'
     
-    def process_rule_selection(self, raw_actions: List[np.ndarray],
+    def process_rule_selection(self, raw_actions: List,
                                rewards: Optional[List[float]] = None) -> List[int]:
         """
         Main entry point - process rule selection based on current phase.
         
         Args:
-            raw_actions (list): Raw actions from agents
+            raw_actions (list): Raw actions from agents (can be one-hot, logits, or scalars)
             rewards (list, optional): Rewards from previous step
             
         Returns:
             list: Final selected rules for each agent
         """
-        # Convert actions to rule IDs
+        # ✅ FIX: Convert actions to rule IDs - handle all formats
         raw_rule_ids = []
         for action in raw_actions:
-            if isinstance(action, np.ndarray):
-                if action.shape == () or len(action.shape) == 0:
-                    rule_id = int(action)
-                else:
-                    rule_id = int(np.argmax(action))
-            else:
-                rule_id = int(action)
+            rule_id = self._convert_action_to_rule_id(action)
             raw_rule_ids.append(rule_id)
         
         # Update performance tracking
@@ -137,6 +112,35 @@ class ThreePhaseController:
         self.current_step += 1
         
         return selected_rules
+    
+    def _convert_action_to_rule_id(self, action) -> int:
+        """
+        ✅ FIXED: Convert action to rule ID - handles all formats.
+        
+        Supports:
+        - Scalar int/float: 0, 1, 2
+        - Numpy scalar: np.array(1)
+        - One-hot numpy array: np.array([0, 1, 0])
+        - One-hot Python list: [0.0, 1.0, 0.0]
+        - Logits: [0.1, 0.8, 0.1]
+        """
+        # Case 1: Numpy array
+        if isinstance(action, np.ndarray):
+            if action.shape == () or len(action.shape) == 0:
+                # Scalar numpy
+                return int(action)
+            else:
+                # One-hot or logits array
+                return int(np.argmax(action))
+        
+        # Case 2: Python list or tuple
+        elif isinstance(action, (list, tuple)):
+            # One-hot or logits list
+            return int(np.argmax(action))
+        
+        # Case 3: Scalar (int or float)
+        else:
+            return int(action)
     
     def _update_performance_tracking(self, rewards: List[float]):
         """Update performance tracker with rewards."""
@@ -194,8 +198,6 @@ class ThreePhaseController:
     def _execution_phase_processing(self, raw_rule_ids: List[int]) -> List[int]:
         """
         Execution: Use primary rules with adaptive switching.
-        
-        INCLUDES SWITCHING LOGIC - No need for switching_controller.py
         """
         selected_rules = []
         
@@ -240,14 +242,7 @@ class ThreePhaseController:
     
     def _should_switch_rule(self, agent_id: int, suggested_rule: int) -> bool:
         """
-        Decide if should switch rules (SWITCHING LOGIC).
-        
-        Args:
-            agent_id (int): Agent identifier
-            suggested_rule (int): Suggested new rule
-            
-        Returns:
-            bool: True if should switch
+        Decide if should switch rules.
         """
         # Don't switch to same rule
         if suggested_rule == self.primary_rules[agent_id]:

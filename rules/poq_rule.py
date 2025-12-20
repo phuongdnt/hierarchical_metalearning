@@ -1,136 +1,89 @@
-"""Periodic Order Quantity (POQ) rule implementation."""
+"""Periodic Order Quantity (POQ) rule implementation - FIXED v3.
+
+Logic đơn giản:
+- Chỉ order khi inventory_position < demand × safety_periods
+- safety_periods = 1.5 (đủ cho 1.5 periods)
+- Nếu đủ hàng cho 1.5 periods → KHÔNG ORDER
+"""
 
 import numpy as np
 from typing import Dict, Any, List
 from .base_rule import InventoryRule
 
+
 class POQRule(InventoryRule):
     """
-    Periodic Order Quantity Policy Implementation.
+    Periodic Order Quantity Policy - Conservative Version.
     
-    Logic: Order to cover forecasted demand for (lead_time + target_periods).
-    This policy is effective for items with predictable demand patterns.
-    
-    Reference: Silver, E. A., Pyke, D. F., & Peterson, R. (1998).
-               Inventory management and production planning and scheduling.
+    Key principle: Only order when inventory is TRULY insufficient.
     """
     
     def __init__(self, parameters: Dict[str, Any]):
-        """
-        Initialize POQ rule.
-        
-        Args:
-            parameters (dict): Must contain:
-                - 'lead_time': Lead time periods
-                - 'target_periods': Number of periods to cover
-                - 'forecast_window': Window for demand forecast (optional, default=3)
-        """
         super().__init__(parameters)
         self.rule_id = 1
         self.rule_name = "Periodic Order Quantity (POQ)"
         
-        # Extract parameters
-        self.lead_time = int(parameters['lead_time'])
-        self.target_periods = int(parameters['target_periods'])
+        self.lead_time = int(parameters.get('lead_time', 4))
+        self.target_periods = int(parameters.get('target_periods', 2))
         self.forecast_window = int(parameters.get('forecast_window', 3))
+        
+        # ✅ KEY PARAMETER: Only order if inv < demand * safety_periods
+        # safety_periods = 1.5 means: order only if inventory covers less than 1.5 periods
+        self.safety_periods = float(parameters.get('safety_periods', 1.5))
     
     def calculate_order_quantity(self, agent_state: Dict[str, Any]) -> float:
         """
-        Calculate order quantity using POQ logic.
+        Calculate order quantity using conservative POQ logic.
         
-        Logic:
-            coverage_period = lead_time + target_periods
-            forecasted_demand = forecast(coverage_period)
-            target_inventory = sum(forecasted_demand)
-            order_quantity = max(0, target_inventory - inventory_position)
-        
-        Args:
-            agent_state (dict): Current agent state
-            
-        Returns:
-            float: Order quantity to cover target periods
+        ✅ SIMPLE LOGIC:
+        1. Estimate average demand
+        2. Calculate reorder_point = avg_demand × safety_periods
+        3. If inventory_position > reorder_point → DON'T ORDER
+        4. If inventory_position <= reorder_point → Order to cover target
         """
-        # Calculate coverage period
-        coverage_period = self.lead_time + self.target_periods
+        # Step 1: Estimate demand
+        avg_demand = self._estimate_demand(agent_state)
         
-        # Forecast demand for coverage period
-        demand_forecast = self._forecast_demand(agent_state, coverage_period)
-        
-        # Calculate target inventory level
-        target_inventory = sum(demand_forecast)
-        
-        # Calculate current inventory position
+        # Step 2: Calculate inventory position
         inventory_position = self._calculate_inventory_position(agent_state)
         
-        # Order up to target level
+        # Step 3: Calculate reorder point (conservative)
+        # Only order if inventory covers less than safety_periods of demand
+        reorder_point = avg_demand * self.safety_periods
+        
+        # ✅ KEY CHECK: Don't order if we have enough inventory
+        if inventory_position > reorder_point:
+            return 0.0
+        
+        # Step 4: Calculate target and order quantity
+        coverage_period = self.lead_time + self.target_periods
+        target_inventory = avg_demand * coverage_period
+        
         order_quantity = max(0.0, target_inventory - inventory_position)
         
         return order_quantity
     
-    def _forecast_demand(self, agent_state: Dict[str, Any], periods: int) -> List[float]:
-        """
-        Forecast demand using moving average.
-        
-        Args:
-            agent_state (dict): Contains demand_history
-            periods (int): Number of periods to forecast
-            
-        Returns:
-            list: Forecasted demand for each period
-        """
+    def _estimate_demand(self, agent_state: Dict[str, Any]) -> float:
+        """Estimate average demand from history."""
         demand_history = agent_state.get('demand_history', [])
         
         if not demand_history:
-            # No history - use zero forecast
-            return [0.0] * periods
+            return 10.0  # Default demand
         
-        # Use moving average for forecast
         window = min(self.forecast_window, len(demand_history))
         recent_demand = demand_history[-window:]
-        average_demand = float(np.mean(recent_demand))
         
-        # Simple forecast: constant average
-        forecast = [average_demand] * periods
-        
-        return forecast
+        return sum(recent_demand) / len(recent_demand) if recent_demand else 10.0
     
     def get_rule_name(self) -> str:
-        """Return rule name."""
         return self.rule_name
     
     def validate_parameters(self, params: Dict[str, Any]) -> bool:
-        """
-        Validate POQ parameters.
-        
-        Args:
-            params (dict): Parameters to validate
-            
-        Returns:
-            bool: True if valid
-            
-        Raises:
-            ValueError: If parameters invalid
-        """
-        if 'lead_time' not in params:
-            raise ValueError("POQ requires 'lead_time' parameter")
-        if 'target_periods' not in params:
-            raise ValueError("POQ requires 'target_periods' parameter")
-        
-        lead_time = int(params['lead_time'])
-        target_periods = int(params['target_periods'])
-        
-        if lead_time <= 0:
-            raise ValueError(f"lead_time must be positive, got {lead_time}")
-        if target_periods <= 0:
-            raise ValueError(f"target_periods must be positive, got {target_periods}")
-        
         return True
     
     def get_parameters_info(self) -> Dict[str, str]:
-        """Return information about rule parameters."""
         return {
-            'lead_time': f"Supply lead time (current: {self.lead_time})",
-            'target_periods': f"Periods to cover (current: {self.target_periods})",
-            'coverage': f"Total coverage: {self.lead_time + self.target_periods} periods"
+            'lead_time': f"Lead time (current: {self.lead_time})",
+            'target_periods': f"Target periods (current: {self.target_periods})",
+            'safety_periods': f"Only order if inv < demand × this (current: {self.safety_periods})"
         }
-

@@ -83,7 +83,7 @@ def get_config():
     # TRAINING
     # ========================================
     parser.add_argument("--num_env_steps", type=int, default=10000000)
-    parser.add_argument("--n_rollout_threads", type=int, default=1)
+    parser.add_argument("--n_rollout_threads", type=int, default=5)
     parser.add_argument("--n_eval_rollout_threads", type=int, default=1)
     parser.add_argument("--use_linear_lr_decay", type=lambda x: bool(str(x).lower() == 'true'), default=False)
     
@@ -93,7 +93,7 @@ def get_config():
     parser.add_argument("--log_interval", type=int, default=5)
     parser.add_argument("--save_interval", type=int, default=100)
     parser.add_argument("--eval_interval", type=int, default=25)
-    parser.add_argument("--use_eval", type=lambda x: bool(str(x).lower() == 'true'), default=False)
+    parser.add_argument("--use_eval", type=lambda x: bool(str(x).lower() == 'true'), default=True)
     parser.add_argument("--eval_episodes", type=int, default=10)
     parser.add_argument("--n_warmup_evaluations", type=int, default=5)
     parser.add_argument("--n_no_improvement_thres", type=int, default=20)

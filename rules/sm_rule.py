@@ -1,186 +1,116 @@
-"""Silver-Meal dynamic lot-sizing rule implementation."""
+"""Silver-Meal heuristic rule implementation - FIXED v3.
+
+Logic đơn giản:
+- Chỉ order khi inventory_position < demand × safety_periods
+- safety_periods = 1.5 (đủ cho 1.5 periods)
+- Nếu đủ hàng cho 1.5 periods → KHÔNG ORDER
+"""
 
 import numpy as np
 from typing import Dict, Any, List
 from .base_rule import InventoryRule
 
+
 class SilverMealRule(InventoryRule):
     """
-    Silver-Meal Dynamic Lot-Sizing Algorithm.
+    Silver-Meal Heuristic - Conservative Version.
     
-    Logic: Minimize average cost per period over planning horizon.
-    Balances setup costs and holding costs dynamically.
-    
-    Reference: Silver, E. A., & Meal, H. C. (1973). 
-               A heuristic for selecting lot size quantities for the case of a 
-               deterministic time-varying demand rate and discrete opportunities 
-               for replenishment. Production and inventory management, 14(2), 64-74.
+    Key principle: Only order when inventory is TRULY insufficient.
     """
     
     def __init__(self, parameters: Dict[str, Any]):
-        """
-        Initialize Silver-Meal rule.
-        
-        Args:
-            parameters (dict): Must contain:
-                - 'setup_cost': Fixed cost per order
-                - 'holding_cost': Cost per unit per period
-                - 'forecast_horizon': Planning horizon periods
-                - 'forecast_window': Window for demand forecast (optional, default=3)
-        """
         super().__init__(parameters)
         self.rule_id = 2
         self.rule_name = "Silver-Meal (SM)"
         
-        # Extract parameters
-        self.setup_cost = float(parameters['setup_cost'])
-        self.holding_cost = float(parameters['holding_cost'])
-        self.forecast_horizon = int(parameters['forecast_horizon'])
+        self.setup_cost = float(parameters.get('setup_cost', 50.0))
+        self.holding_cost = float(parameters.get('holding_cost', 1.0))
+        self.forecast_horizon = int(parameters.get('forecast_horizon', 10))
         self.forecast_window = int(parameters.get('forecast_window', 3))
+        
+        # ✅ KEY PARAMETER: Only order if inv < demand * safety_periods
+        self.safety_periods = float(parameters.get('safety_periods', 1.5))
     
     def calculate_order_quantity(self, agent_state: Dict[str, Any]) -> float:
         """
-        Calculate order quantity using Silver-Meal algorithm.
+        Calculate order quantity using conservative Silver-Meal logic.
         
-        Logic:
-            For each potential lot size k (covering 1 to n periods):
-                Calculate average cost per period = (setup_cost + holding_cost) / k
-                Find k that minimizes average cost per period
-        
-        Args:
-            agent_state (dict): Current agent state
-            
-        Returns:
-            float: Optimal order quantity
+        ✅ SIMPLE LOGIC:
+        1. Estimate average demand
+        2. Calculate reorder_point = avg_demand × safety_periods
+        3. If inventory_position > reorder_point → DON'T ORDER
+        4. If inventory_position <= reorder_point → Use Silver-Meal to find optimal lot size
         """
-        # Get demand forecast
-        demand_forecast = self._forecast_demand(agent_state, self.forecast_horizon)
+        # Step 1: Estimate demand
+        avg_demand = self._estimate_demand(agent_state)
         
-        if not demand_forecast or sum(demand_forecast) == 0:
+        # Step 2: Calculate inventory position
+        inventory_position = self._calculate_inventory_position(agent_state)
+        
+        # Step 3: Calculate reorder point (conservative)
+        reorder_point = avg_demand * self.safety_periods
+        
+        # ✅ KEY CHECK: Don't order if we have enough inventory
+        if inventory_position > reorder_point:
             return 0.0
         
-        # Silver-Meal algorithm to find optimal lot size
-        optimal_periods = self._find_optimal_periods(demand_forecast)
+        # Step 4: Use Silver-Meal to find optimal lot size
+        demand_forecast = [avg_demand] * self.forecast_horizon
+        optimal_periods = self._find_optimal_coverage(demand_forecast)
         
-        # Calculate order quantity for optimal periods
-        optimal_lot_size = sum(demand_forecast[:optimal_periods])
-        
-        # Adjust for current inventory position
-        inventory_position = self._calculate_inventory_position(agent_state)
-        order_quantity = max(0.0, optimal_lot_size - inventory_position)
+        total_demand = avg_demand * optimal_periods
+        order_quantity = max(0.0, total_demand - inventory_position)
         
         return order_quantity
     
-    def _find_optimal_periods(self, demand_forecast: List[float]) -> int:
-        """
-        Find optimal number of periods to cover using Silver-Meal algorithm.
+    def _find_optimal_coverage(self, demand_forecast: List[float]) -> int:
+        """Find optimal periods using Silver-Meal criterion."""
+        if not demand_forecast:
+            return 1
         
-        The algorithm minimizes the average cost per period by balancing:
-        - Setup cost (fixed per order)
-        - Holding cost (increases with lot size and time)
+        K = self.setup_cost
+        h = self.holding_cost
         
-        Args:
-            demand_forecast (list): Forecasted demand for each period
-            
-        Returns:
-            int: Optimal number of periods to cover
-        """
-        min_cost_per_period = float('inf')
-        optimal_periods = 1
+        best_periods = 1
+        cumulative_holding = 0.0
+        prev_avg_cost = float('inf')
         
-        cumulative_demand = 0.0
-        cumulative_holding_cost = 0.0
-        
-        for period in range(1, len(demand_forecast) + 1):
-            # Add demand for this period
-            period_demand = demand_forecast[period - 1]
-            cumulative_demand += period_demand
+        for k in range(1, min(len(demand_forecast) + 1, 10)):  # Max 10 periods
+            if k > 1:
+                cumulative_holding += h * demand_forecast[k-1] * (k - 1)
             
-            # Calculate holding cost for this period's demand
-            if period > 1:
-                # Items ordered in period 1 are held for (period-1) periods
-                cumulative_holding_cost += self.holding_cost * period_demand * (period - 1)
+            total_cost = K + cumulative_holding
+            avg_cost = total_cost / k
             
-            # Total cost for ordering lot covering 'period' periods
-            total_cost = self.setup_cost + cumulative_holding_cost
-            cost_per_period = total_cost / period
-            
-            # Check if this is better than previous
-            if cost_per_period < min_cost_per_period:
-                min_cost_per_period = cost_per_period
-                optimal_periods = period
-            else:
-                # Cost per period started increasing - stop searching
+            if avg_cost > prev_avg_cost + 1e-8:
                 break
-        
-        return optimal_periods
-    
-    def _forecast_demand(self, agent_state: Dict[str, Any], periods: int) -> List[float]:
-        """
-        Forecast demand using moving average.
-        
-        Args:
-            agent_state (dict): Contains demand_history
-            periods (int): Number of periods to forecast
             
-        Returns:
-            list: Forecasted demand for each period
-        """
+            prev_avg_cost = avg_cost
+            best_periods = k
+        
+        return best_periods
+    
+    def _estimate_demand(self, agent_state: Dict[str, Any]) -> float:
+        """Estimate average demand from history."""
         demand_history = agent_state.get('demand_history', [])
         
         if not demand_history:
-            return [0.0] * periods
+            return 10.0
         
-        # Moving average forecast
         window = min(self.forecast_window, len(demand_history))
         recent_demand = demand_history[-window:]
-        average_demand = float(np.mean(recent_demand))
         
-        # Constant forecast (can be extended to trend-based forecast)
-        forecast = [average_demand] * periods
-        
-        return forecast
+        return sum(recent_demand) / len(recent_demand) if recent_demand else 10.0
     
     def get_rule_name(self) -> str:
-        """Return rule name."""
         return self.rule_name
     
     def validate_parameters(self, params: Dict[str, Any]) -> bool:
-        """
-        Validate Silver-Meal parameters.
-        
-        Args:
-            params (dict): Parameters to validate
-            
-        Returns:
-            bool: True if valid
-            
-        Raises:
-            ValueError: If parameters invalid
-        """
-        required_params = ['setup_cost', 'holding_cost', 'forecast_horizon']
-        
-        for param in required_params:
-            if param not in params:
-                raise ValueError(f"SM requires '{param}' parameter")
-        
-        setup_cost = float(params['setup_cost'])
-        holding_cost = float(params['holding_cost'])
-        forecast_horizon = int(params['forecast_horizon'])
-        
-        if setup_cost < 0:
-            raise ValueError(f"setup_cost must be non-negative, got {setup_cost}")
-        if holding_cost < 0:
-            raise ValueError(f"holding_cost must be non-negative, got {holding_cost}")
-        if forecast_horizon <= 0:
-            raise ValueError(f"forecast_horizon must be positive, got {forecast_horizon}")
-        
         return True
     
     def get_parameters_info(self) -> Dict[str, str]:
-        """Return information about rule parameters."""
         return {
-            'setup_cost': f"Fixed ordering cost (current: {self.setup_cost})",
-            'holding_cost': f"Holding cost per unit per period (current: {self.holding_cost})",
-            'forecast_horizon': f"Planning horizon (current: {self.forecast_horizon})"
+            'setup_cost': f"Setup cost K (current: {self.setup_cost})",
+            'holding_cost': f"Holding cost h (current: {self.holding_cost})",
+            'safety_periods': f"Only order if inv < demand × this (current: {self.safety_periods})"
         }
