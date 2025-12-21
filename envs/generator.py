@@ -41,7 +41,10 @@ class merton(object):
 
     def __getitem__(self, key = 0):
         return self.demand_list[key]
-
+    
+    def __len__(self):
+        return len(self.demand_list)
+        
 class stationary_possion(object):
 
     def __init__(self, length, max_demand=20):
@@ -49,3 +52,6 @@ class stationary_possion(object):
     
     def __getitem__(self, key = 0):
         return self.demand_list[key]
+    
+    def __len__(self):
+        return len(self.demand_list)
