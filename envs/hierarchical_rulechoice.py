@@ -7,10 +7,16 @@ KHÔNG cần thay đổi serial.py.
 Flow:
 Neural Network → Rule ID → Phase Controller → Rule Logic → Order Qty → Liu's step()
 """
+import os
+import sys
+from typing import Dict, List, Any, Optional
 
 import numpy as np
 from gym import spaces
-from typing import Dict, List, Any, Optional
+
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
 
 # Import từ serial.py GỐC của bạn
 from envs.serial import Env as LiuSerialEnv
@@ -206,7 +212,7 @@ class Env(LiuSerialEnv):
     Kế thừa 100% từ Liu's serial.py Env class.
     """
     
-    def __init__(self):
+    def __init__(self, all_args=None):
         # Gọi __init__ của parent class
         super(Env, self).__init__()
         
