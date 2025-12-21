@@ -98,6 +98,19 @@ def get_config():
     parser.add_argument("--n_warmup_evaluations", type=int, default=5)
     parser.add_argument("--n_no_improvement_thres", type=int, default=20)
     parser.add_argument("--use_render", type=lambda x: bool(str(x).lower() == 'true'), default=False)
+
+    # ========================================
+    # META-LEARNING
+    # ========================================
+    parser.add_argument("--use_meta_learning", type=lambda x: bool(str(x).lower() == 'true'), default=False)
+    parser.add_argument("--meta_base_env", type=str, default="serial")
+    parser.add_argument("--meta_episode_length", type=int, default=30)
+    parser.add_argument("--meta_batch_size", type=int, default=16)
+    parser.add_argument("--meta_n_episodes", type=int, default=2000)
+    parser.add_argument("--meta_log_interval", type=int, default=50)
+    parser.add_argument("--meta_eval_interval", type=int, default=100)
+    parser.add_argument("--meta_temp_start", type=float, default=2.0)
+    parser.add_argument("--meta_temp_end", type=float, default=0.5)
     
     # ========================================
     # HIERARCHICAL SYSTEM
