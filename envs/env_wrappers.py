@@ -35,6 +35,11 @@ def _get_env_class(env_name: str):
     return ENV_REGISTRY[env_name]
 
 
+def get_env_class(env_name: str):
+    """Public helper to fetch an environment class by name."""
+    return _get_env_class(env_name)
+
+
 class MultiDiscrete(gym.Space):
     """
     Multi-discrete action space.

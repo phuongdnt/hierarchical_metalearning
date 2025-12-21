@@ -7,7 +7,8 @@ import numpy as np
 from pathlib import Path
 import torch
 from config import get_config
-from envs.env_wrappers import SubprocVecEnv, DummyVecEnv
+from envs.env_wrappers import SubprocVecEnv, DummyVecEnv, get_env_class
+from hierarchical_metalearning import train_meta_learning
 from runners.separated.runner import CRunner as Runner
 
 
@@ -56,6 +57,35 @@ if __name__ == "__main__":
     # Parse arguments
     parser = get_config()
     all_args = parse_args(sys.argv[1:], parser)
+
+    if getattr(all_args, "use_meta_learning", False):
+        print("\n" + "=" * 70)
+        print("STARTING META-LEARNING TRAINING")
+        print("=" * 70 + "\n")
+
+        base_env_cls = get_env_class(getattr(all_args, "meta_base_env", "serial"))
+        try:
+            base_env = base_env_cls(all_args)
+        except TypeError:
+            base_env = base_env_cls()
+
+        n_agents = getattr(all_args, "num_agents", getattr(base_env, "agent_num", 3))
+        env, _ = train_meta_learning(
+            base_env,
+            n_agents=n_agents,
+            episode_length=getattr(all_args, "meta_episode_length", 30),
+            batch_size=getattr(all_args, "meta_batch_size", 16),
+            n_episodes=getattr(all_args, "meta_n_episodes", 2000),
+            eval_interval=getattr(all_args, "meta_eval_interval", 100),
+            log_interval=getattr(all_args, "meta_log_interval", 50),
+            temperature_start=getattr(all_args, "meta_temp_start", 2.0),
+            temperature_end=getattr(all_args, "meta_temp_end", 0.5),
+        )
+
+        print("\n" + "=" * 70)
+        print("META-LEARNING TRAINING COMPLETE")
+        print("=" * 70 + "\n")
+        sys.exit(0)
     
     # Handle seed
     if isinstance(all_args.seed, int):
