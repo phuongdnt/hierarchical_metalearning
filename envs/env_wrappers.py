@@ -4,7 +4,7 @@ import numpy as np
 import gym
 from gym import spaces
 from envs.serial import Env as SerialEnv
-from envs.hierarchical_rulechoice import Env
+from envs.hierarchical_rulechoice import Env as HierarchicalSupplyChainEnv
 
 
 """ Environment registry"""
@@ -12,6 +12,7 @@ from envs.hierarchical_rulechoice import Env
 ENV_REGISTRY = {
     "serial": SerialEnv,
     "hierarchical": HierarchicalSupplyChainEnv,
+        "MyEnv": HierarchicalSupplyChainEnv,
 }
 
 
