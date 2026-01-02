@@ -12,8 +12,8 @@ def get_config():
     # ========================================
     # ENVIRONMENT
     # ========================================
-    parser.add_argument("--env_name", type=str, default='hierarchical')
-    parser.add_argument("--scenario_name", type=str, default='supply_chain')
+    parser.add_argument("--env_name", type=str, default='MyEnv')
+    parser.add_argument("--scenario_name", type=str, default='Ineventory Management')
     parser.add_argument("--n_agents", type=int, default=3)
     parser.add_argument("--num_agents", type=int, default=3)
     parser.add_argument("--lead_time", type=int, default=4)
@@ -23,7 +23,7 @@ def get_config():
     # ALGORITHM
     # ========================================
     parser.add_argument("--algorithm_name", type=str, default='happo')
-    parser.add_argument("--experiment_name", type=str, default='hierarchical_exp')
+    parser.add_argument("--experiment_name", type=str, default='check')
     parser.add_argument("--use_centralized_V", type=lambda x: bool(str(x).lower() == 'true'), default=True)
     parser.add_argument("--use_obs_instead_of_state", type=lambda x: bool(str(x).lower() == 'true'), default=False)
     
@@ -143,7 +143,7 @@ def get_config():
     # ========================================
     # MISC
     # ========================================
-    parser.add_argument("--seed", type=int, default=1)
+    parser.add_argument("--seed", type=int, nargs="+", default=list(range(10)))
     parser.add_argument("--cuda", type=lambda x: bool(str(x).lower() == 'true'), default=True)
     parser.add_argument("--cuda_deterministic", type=lambda x: bool(str(x).lower() == 'true'), default=True)
     parser.add_argument("--n_training_threads", type=int, default=1)
